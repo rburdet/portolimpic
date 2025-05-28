@@ -7,12 +7,25 @@
 	"name": "portolimpic",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-05-28",
+	"routes": [
+		{
+			"pattern": "wind.rburdet.com/*",
+			"zone_name": "rburdet.com"
+		}
+	],
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
 	"observability": {
 		"enabled": true
-	}
+	},
+	"kv_namespaces": [
+		{
+			"binding": "WIND_DATA",
+			"id": "16fb5ba4984d4c9d9d7114ef6059d28c",
+			"preview_id": "71283dc1453944b2a22bd6f22c8ce3e6"
+		}
+	]
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
