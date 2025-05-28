@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Brush, ReferenceLine, ReferenceArea } from 'recharts';
+import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { WindDataPoint, formatDate, formatTime, degToCompass16 } from '@/lib/wind-utils';
 import { WindArrow } from './WindArrow';
 import { Button } from '@/components/ui/button';
@@ -66,6 +66,10 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
   const [isSelecting, setIsSelecting] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
 
+  // Add state for selection coordinates
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
+
   // Initialize time range
   useEffect(() => {
     if (chartData.length > 0) {
@@ -88,12 +92,6 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
     return dataPointsInRange.length > 1 ? dataPointsInRange : originalData.slice(0, 2);
   }, [startTime, endTime, originalData]);
 
-  // Calculate total wind events for display
-  const total = useMemo(
-    () => zoomedData.reduce((acc, curr) => acc + curr.wind_speed_knots, 0),
-    [zoomedData]
-  );
-
   // Calculate optimal tick interval based on display data length
   const getTickInterval = () => {
     const dataLength = zoomedData.length;
@@ -111,36 +109,56 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
   };
 
   const handleMouseDown = (e: any) => {
-    if (e?.activeLabel) {
-      // Find the corresponding datetime for the activeLabel
-      const dataPoint = chartData.find(d => d.formattedTime === e.activeLabel);
-      if (dataPoint) {
-        setRefAreaLeft(dataPoint.datetime);
-        setIsSelecting(true);
-      }
+    console.log('Mouse down:', e?.activeLabel, e);
+    if (e?.activeLabel && e?.activeTooltipIndex !== undefined && e?.chartX !== undefined) {
+      // Use the data index for zoom functionality
+      setRefAreaLeft(e.activeTooltipIndex.toString());
+      setIsSelecting(true);
+      
+      // Store the actual pixel coordinates for visual overlay
+      setSelectionStart({ x: e.chartX, y: e.chartY });
+      setSelectionEnd({ x: e.chartX, y: e.chartY });
+      
+      console.log('Set refAreaLeft index:', e.activeTooltipIndex, 'at coordinates:', e.chartX, e.chartY);
     }
   };
 
   const handleMouseMove = (e: any) => {
-    if (isSelecting && e?.activeLabel) {
-      const dataPoint = chartData.find(d => d.formattedTime === e.activeLabel);
-      if (dataPoint) {
-        setRefAreaRight(dataPoint.datetime);
-      }
+    if (isSelecting && e?.activeLabel && e?.activeTooltipIndex !== undefined && e?.chartX !== undefined) {
+      setRefAreaRight(e.activeTooltipIndex.toString());
+      
+      // Update the end coordinates for visual overlay
+      setSelectionEnd({ x: e.chartX, y: e.chartY });
+      
+      console.log('Set refAreaRight index:', e.activeTooltipIndex, 'at coordinates:', e.chartX, e.chartY);
     }
   };
 
   const handleMouseUp = () => {
+    console.log('Mouse up - refAreaLeft:', refAreaLeft, 'refAreaRight:', refAreaRight);
     if (refAreaLeft && refAreaRight) {
-      const [left, right] = [refAreaLeft, refAreaRight].sort();
-      if (left && right) {
-        setStartTime(left);
-        setEndTime(right);
+      // Convert indices back to data points
+      const leftIndex = parseInt(refAreaLeft);
+      const rightIndex = parseInt(refAreaRight);
+      const leftDataPoint = zoomedData[leftIndex];
+      const rightDataPoint = zoomedData[rightIndex];
+      
+      console.log('Found data points by index:', leftDataPoint, rightDataPoint);
+      
+      if (leftDataPoint && rightDataPoint) {
+        const [left, right] = [leftDataPoint.datetime, rightDataPoint.datetime].sort();
+        if (left && right) {
+          setStartTime(left);
+          setEndTime(right);
+          console.log('Applied zoom:', left, right);
+        }
       }
     }
     setRefAreaLeft(null);
     setRefAreaRight(null);
     setIsSelecting(false);
+    setSelectionStart(null);
+    setSelectionEnd(null);
   };
 
   const handleZoom = (e: React.WheelEvent | React.TouchEvent) => {
@@ -152,13 +170,13 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
     
     if (!firstData || !lastData) return;
 
-    let zoomFactor = 0.1;
+    let zoomFactor = 0.15; // Slightly increased for better responsiveness
     let direction = 0;
     let clientX = 0;
 
     if ('deltaY' in e) {
       // Mouse wheel event
-      direction = e.deltaY < 0 ? 1 : -1;
+      direction = e.deltaY < 0 ? 1 : -1; // 1 = zoom in, -1 = zoom out
       clientX = e.clientX;
     } else if (e.touches && e.touches.length === 2) {
       // Pinch zoom
@@ -177,30 +195,53 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
     } else {
       return;
     }
-    
-    const currentRange = new Date(endTime || lastData.datetime).getTime() - 
-                        new Date(startTime || firstData.datetime).getTime();
-    const zoomAmount = currentRange * zoomFactor * direction;
 
+    // Get the full data range
+    const fullStartTime = new Date(firstData.datetime).getTime();
+    const fullEndTime = new Date(lastData.datetime).getTime();
+    const fullRange = fullEndTime - fullStartTime;
+
+    // Get current zoom range
+    const currentStartTime = new Date(startTime || firstData.datetime).getTime();
+    const currentEndTime = new Date(endTime || lastData.datetime).getTime();
+    const currentRange = currentEndTime - currentStartTime;
+
+    // Calculate mouse position percentage
     const chartRect = chartRef.current.getBoundingClientRect();
     const mouseX = clientX - chartRect.left;
     const chartWidth = chartRect.width;
-    const mousePercentage = mouseX / chartWidth;
+    const mousePercentage = Math.max(0, Math.min(1, mouseX / chartWidth));
 
-    const currentStartTime = new Date(startTime || firstData.datetime).getTime();
-    const currentEndTime = new Date(endTime || lastData.datetime).getTime();
+    if (direction > 0) {
+      // ZOOM IN
+      const zoomAmount = currentRange * zoomFactor;
+      const newStartTime = new Date(currentStartTime + zoomAmount * mousePercentage);
+      const newEndTime = new Date(currentEndTime - zoomAmount * (1 - mousePercentage));
 
-    const newStartTime = new Date(currentStartTime + zoomAmount * mousePercentage);
-    const newEndTime = new Date(currentEndTime - zoomAmount * (1 - mousePercentage));
+      // Ensure minimum zoom range (at least 2 data points worth of time)
+      const minRange = fullRange / (originalData.length - 1) * 2;
+      if (newEndTime.getTime() - newStartTime.getTime() >= minRange) {
+        setStartTime(newStartTime.toISOString());
+        setEndTime(newEndTime.toISOString());
+      }
+    } else {
+      // ZOOM OUT
+      const zoomAmount = currentRange * zoomFactor;
+      let newStartTime = new Date(currentStartTime - zoomAmount * mousePercentage);
+      let newEndTime = new Date(currentEndTime + zoomAmount * (1 - mousePercentage));
 
-    // Ensure we don't zoom beyond the original data bounds
-    const minTime = new Date(firstData.datetime).getTime();
-    const maxTime = new Date(lastData.datetime).getTime();
-
-    if (newStartTime.getTime() >= minTime && newEndTime.getTime() <= maxTime && 
-        newEndTime.getTime() > newStartTime.getTime()) {
-      setStartTime(newStartTime.toISOString());
-      setEndTime(newEndTime.toISOString());
+      // If zooming out would exceed the full range, just reset to full view
+      if (newStartTime.getTime() <= fullStartTime || newEndTime.getTime() >= fullEndTime) {
+        setStartTime(firstData.datetime);
+        setEndTime(lastData.datetime);
+      } else {
+        // Ensure we don't go beyond the original data bounds
+        newStartTime = new Date(Math.max(newStartTime.getTime(), fullStartTime));
+        newEndTime = new Date(Math.min(newEndTime.getTime(), fullEndTime));
+        
+        setStartTime(newStartTime.toISOString());
+        setEndTime(newEndTime.toISOString());
+      }
     }
   };
 
@@ -279,7 +320,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
         <CardContent>
           {/* Main Chart Container */}
           <div 
-            className="w-full"
+            className="w-full relative"
             ref={chartRef}
             style={{ touchAction: 'none' }}
           >
@@ -351,24 +392,49 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
                   dot={false}
                   connectNulls={false}
                 />
-
-                {/* Selection area for zooming */}
-                {refAreaLeft && refAreaRight && (
-                  <ReferenceArea
-                    x1={chartData.find(d => d.datetime === refAreaLeft)?.formattedTime}
-                    x2={chartData.find(d => d.datetime === refAreaRight)?.formattedTime}
-                    strokeOpacity={0.3}
-                    fillOpacity={0.1}
-                    fill="#2563eb"
-                  />
-                )}
               </ComposedChart>
             </ResponsiveContainer>
+            
+            {isSelecting && selectionStart && selectionEnd && (
+              <div
+                className="absolute pointer-events-none"
+                style={{
+                  top: 0,
+                  left: Math.min(selectionStart.x, selectionEnd.x) + 10, // +10 for left margin
+                  width: Math.abs(selectionEnd.x - selectionStart.x),
+                  height: height - 138,
+                  backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                  border: '2px solid rgba(59, 130, 246, 0.5)',
+                  borderLeft: '3px solid #3b82f6',
+                  borderRight: '3px solid #3b82f6',
+                  zIndex: 10,
+                }}
+              >
+                <div className="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-blue-600 font-medium bg-white px-2 py-1 rounded shadow-sm border">
+                  {refAreaLeft && refAreaRight && (() => {
+                    const leftIndex = parseInt(refAreaLeft);
+                    const rightIndex = parseInt(refAreaRight);
+                    const leftPoint = zoomedData[leftIndex];
+                    const rightPoint = zoomedData[rightIndex];
+                    if (leftPoint && rightPoint) {
+                      return `${leftPoint.formattedTime} → ${rightPoint.formattedTime}`;
+                    }
+                    return '';
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
           
           {/* Instructions */}
           <div className="text-xs text-gray-500 text-center mt-2">
             Click and drag to zoom • Scroll wheel to zoom in/out • Touch gestures supported
+            {/* Debug info */}
+            {(refAreaLeft || refAreaRight || isSelecting) && (
+              <div className="text-xs text-red-500 mt-1">
+                Debug: Selecting={isSelecting.toString()}, Left={refAreaLeft}, Right={refAreaRight}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
