@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
+import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { WindDataPoint, formatDate, formatTime, degToCompass16 } from '@/lib/wind-utils';
 import { WindArrow } from './WindArrow';
 import { Button } from '@/components/ui/button';
@@ -66,6 +66,10 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
   const [isSelecting, setIsSelecting] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
 
+  // Add state for panning
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<{ x: number; startTime: string; endTime: string } | null>(null);
+
   // Add state for selection coordinates
   const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
@@ -109,56 +113,95 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
   };
 
   const handleMouseDown = (e: any) => {
-    console.log('Mouse down:', e?.activeLabel, e);
     if (e?.activeLabel && e?.activeTooltipIndex !== undefined && e?.chartX !== undefined) {
-      // Use the data index for zoom functionality
-      setRefAreaLeft(e.activeTooltipIndex.toString());
-      setIsSelecting(true);
-      
-      // Store the actual pixel coordinates for visual overlay
-      setSelectionStart({ x: e.chartX, y: e.chartY });
-      setSelectionEnd({ x: e.chartX, y: e.chartY });
-      
-      console.log('Set refAreaLeft index:', e.activeTooltipIndex, 'at coordinates:', e.chartX, e.chartY);
+      // Check if Shift key is pressed for selection mode, otherwise pan mode
+      if (e.nativeEvent?.shiftKey) {
+        // SELECTION MODE (with Shift key)
+        setRefAreaLeft(e.activeTooltipIndex.toString());
+        setIsSelecting(true);
+        
+        // Store the actual pixel coordinates for visual overlay
+        setSelectionStart({ x: e.chartX, y: e.chartY });
+        setSelectionEnd({ x: e.chartX, y: e.chartY });
+      } else {
+        // PAN MODE (default)
+        setIsPanning(true);
+        setPanStart({
+          x: e.chartX,
+          startTime: startTime || (originalData[0]?.datetime || ''),
+          endTime: endTime || (originalData[originalData.length - 1]?.datetime || '')
+        });
+      }
     }
   };
 
   const handleMouseMove = (e: any) => {
     if (isSelecting && e?.activeLabel && e?.activeTooltipIndex !== undefined && e?.chartX !== undefined) {
+      // SELECTION MODE
       setRefAreaRight(e.activeTooltipIndex.toString());
       
       // Update the end coordinates for visual overlay
       setSelectionEnd({ x: e.chartX, y: e.chartY });
+    } else if (isPanning && panStart && e?.chartX !== undefined && chartRef.current) {
+      // PAN MODE
+      const deltaX = e.chartX - panStart.x;
+      const chartRect = chartRef.current.getBoundingClientRect();
+      const chartWidth = chartRect.width - 30; // Account for margins
       
-      console.log('Set refAreaRight index:', e.activeTooltipIndex, 'at coordinates:', e.chartX, e.chartY);
+      // Calculate the time range
+      const currentStartTime = new Date(panStart.startTime).getTime();
+      const currentEndTime = new Date(panStart.endTime).getTime();
+      const currentRange = currentEndTime - currentStartTime;
+      
+      // Calculate how much time the pixel movement represents
+      const timePerPixel = currentRange / chartWidth;
+      const timeShift = deltaX * timePerPixel;
+      
+      // Calculate new time range
+      const newStartTime = new Date(currentStartTime - timeShift);
+      const newEndTime = new Date(currentEndTime - timeShift);
+      
+      // Ensure we don't pan beyond the original data bounds
+      const fullStartTime = new Date(originalData[0]?.datetime || '').getTime();
+      const fullEndTime = new Date(originalData[originalData.length - 1]?.datetime || '').getTime();
+      
+      if (newStartTime.getTime() >= fullStartTime && newEndTime.getTime() <= fullEndTime) {
+        setStartTime(newStartTime.toISOString());
+        setEndTime(newEndTime.toISOString());
+      }
     }
   };
 
   const handleMouseUp = () => {
-    console.log('Mouse up - refAreaLeft:', refAreaLeft, 'refAreaRight:', refAreaRight);
-    if (refAreaLeft && refAreaRight) {
-      // Convert indices back to data points
-      const leftIndex = parseInt(refAreaLeft);
-      const rightIndex = parseInt(refAreaRight);
-      const leftDataPoint = zoomedData[leftIndex];
-      const rightDataPoint = zoomedData[rightIndex];
-      
-      console.log('Found data points by index:', leftDataPoint, rightDataPoint);
-      
-      if (leftDataPoint && rightDataPoint) {
-        const [left, right] = [leftDataPoint.datetime, rightDataPoint.datetime].sort();
-        if (left && right) {
-          setStartTime(left);
-          setEndTime(right);
-          console.log('Applied zoom:', left, right);
+    if (isSelecting) {
+      // SELECTION MODE CLEANUP
+      if (refAreaLeft && refAreaRight) {
+        // Convert indices back to data points
+        const leftIndex = parseInt(refAreaLeft);
+        const rightIndex = parseInt(refAreaRight);
+        const leftDataPoint = zoomedData[leftIndex];
+        const rightDataPoint = zoomedData[rightIndex];
+        
+        if (leftDataPoint && rightDataPoint) {
+          const [left, right] = [leftDataPoint.datetime, rightDataPoint.datetime].sort();
+          if (left && right) {
+            setStartTime(left);
+            setEndTime(right);
+          }
         }
       }
+      setRefAreaLeft(null);
+      setRefAreaRight(null);
+      setIsSelecting(false);
+      setSelectionStart(null);
+      setSelectionEnd(null);
     }
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-    setIsSelecting(false);
-    setSelectionStart(null);
-    setSelectionEnd(null);
+    
+    if (isPanning) {
+      // PAN MODE CLEANUP
+      setIsPanning(false);
+      setPanStart(null);
+    }
   };
 
   const handleZoom = (e: React.WheelEvent | React.TouchEvent) => {
@@ -428,13 +471,12 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
           
           {/* Instructions */}
           <div className="text-xs text-gray-500 text-center mt-2">
-            Click and drag to zoom • Scroll wheel to zoom in/out • Touch gestures supported
-            {/* Debug info */}
-            {(refAreaLeft || refAreaRight || isSelecting) && (
-              <div className="text-xs text-red-500 mt-1">
-                Debug: Selecting={isSelecting.toString()}, Left={refAreaLeft}, Right={refAreaRight}
-              </div>
-            )}
+            <div className="space-y-1">
+              <div>🖱️ <strong>Click & Drag:</strong> Pan through timeline</div>
+              <div>⇧ <strong>Shift + Click & Drag:</strong> Select time range to zoom</div>
+              <div>🖱️ <strong>Scroll Wheel:</strong> Zoom in/out</div>
+              <div>📱 <strong>Touch:</strong> Pinch to zoom, gestures supported</div>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { WindDataResponse } from '@/lib/wind-utils';
 import { RefreshCw, AlertCircle, TrendingUp } from 'lucide-react';
+import { NotificationSettings } from '@/components/NotificationSettings';
 
 function App() {
   const [windData, setWindData] = useState<WindDataResponse | null>(null);
@@ -14,6 +15,7 @@ function App() {
   const [selectedRange, setSelectedRange] = useState('7d');
   const [currentHours, setCurrentHours] = useState(168); // 7 days
   const [customRange, setCustomRange] = useState<{ start: Date; end: Date } | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchWindData = async (forceRefresh = false) => {
     setLoading(true);
@@ -70,6 +72,7 @@ function App() {
       }
       
       setWindData(data);
+      setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch wind data');
       console.error('Error fetching wind data:', err);
@@ -126,6 +129,11 @@ function App() {
           <p className="text-sm sm:text-base text-gray-600">
             Real-time wind conditions and historical data from Barcelona's Port Olímpic
           </p>
+          {lastUpdated && (
+            <p className="text-sm text-gray-500 mt-2">
+              Last updated: {lastUpdated.toLocaleString()}
+            </p>
+          )}
         </div>
 
         {/* Time Range Selector */}
@@ -137,55 +145,39 @@ function App() {
           />
         </div>
 
-        {/* Controls */}
-        <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row gap-3 sm:gap-4 sm:items-center justify-between">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-gray-600" />
-            <span className="text-sm font-medium text-gray-700">
-              {getTimeRangeLabel()}
-            </span>
-            {/* Debug info */}
-            <span className="text-xs text-gray-500 ml-2">
-              ({windData?.data?.length || 0} points)
-            </span>
+        {/* Notification Settings and Refresh Button */}
+        <div className="flex flex-col lg:flex-row gap-6 mb-8 items-start">
+          <div className="flex-1">
+            {/* Status indicators */}
+            <div className="flex items-center gap-4 mb-4">
+              {loading && (
+                <div className="flex items-center gap-2 text-blue-600">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                  <span className="text-sm">Updating...</span>
+                </div>
+              )}
+              
+              {error && (
+                <div className="text-red-600 text-sm">
+                  ⚠️ {error}
+                </div>
+              )}
+              
+              <button
+                onClick={handleRefresh}
+                disabled={loading}
+                className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                {loading ? 'Refreshing...' : 'Refresh Data'}
+              </button>
+            </div>
           </div>
 
-          <Button 
-            onClick={handleRefresh} 
-            disabled={loading}
-            variant="outline"
-            size="sm"
-            className="w-full sm:w-auto"
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh Data
-          </Button>
+          {/* Notification Settings */}
+          <div className="lg:w-auto w-full">
+            <NotificationSettings />
+          </div>
         </div>
-
-        {/* Error State */}
-        {error && (
-          <Card className="mb-4 sm:mb-6 border-red-200 bg-red-50">
-            <CardContent className="p-3 sm:p-4">
-              <div className="flex items-start gap-2 text-red-700">
-                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                <div className="text-sm">
-                  <span className="font-medium">Error loading wind data:</span>
-                  <span className="ml-1">{error}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Loading State */}
-        {loading && (
-          <Card className="mb-4 sm:mb-6">
-            <CardContent className="p-6 sm:p-8 text-center">
-              <RefreshCw className="h-6 sm:h-8 w-6 sm:w-8 animate-spin mx-auto mb-4 text-gray-400" />
-              <p className="text-sm sm:text-base text-gray-600">Loading wind data...</p>
-            </CardContent>
-          </Card>
-        )}
 
         {/* Wind Data Display */}
         {windData && windData.data && windData.data.length > 0 && (

@@ -1,4 +1,11 @@
+import { NotificationService } from './notification-service';
+
 interface Env {
+  DB: D1Database;
+  VAPID_PUBLIC_KEY: string;
+  VAPID_PRIVATE_KEY: string;
+  VAPID_EMAIL: string;
+  RESEND_API_KEY?: string;
   WIND_DATA: KVNamespace;
 }
 
@@ -330,39 +337,131 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+  // Cron trigger - runs every 5 minutes
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(handleCron(env));
+  },
 
-    // Add CORS headers
+  // HTTP requests
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // CORS headers
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
 
-    // Handle preflight requests
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    if (url.pathname === '/api/wind-data') {
-      const response = await handleWindDataRequest(request, env);
-      // Add CORS headers to the response
-      Object.entries(corsHeaders).forEach(([key, value]) => {
-        response.headers.set(key, value);
-      });
-      return response;
-    }
+    const notificationService = new NotificationService(env);
 
-    if (url.pathname.startsWith("/api/")) {
-      return Response.json({
-        name: "Port Olímpic Wind Data API",
-        endpoints: {
-          "/api/wind-data": "Get wind data with optional query params: ?days=7&limit=400&refresh=true"
+    try {
+      // API Routes
+      if (path === '/api/notifications/settings') {
+        if (request.method === 'POST') {
+          const response = await notificationService.handleSubscriptionSave(request);
+          return new Response(response.body, {
+            status: response.status,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
         }
-      }, { headers: corsHeaders });
-    }
+        
+        if (request.method === 'GET') {
+          // Return user's current settings
+          return new Response(JSON.stringify({
+            enabled: false,
+            windSpeedThreshold: 20,
+            gustThreshold: 25,
+            pushEnabled: false
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+      }
 
-    return new Response(null, { status: 404 });
+      if (path === '/api/notifications/test' && request.method === 'POST') {
+        const response = await notificationService.handleTestNotification(request);
+        return new Response(response.body, {
+          status: response.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Manual trigger for testing
+      if (path === '/api/notifications/trigger' && request.method === 'POST') {
+        await handleCron(env);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (path === '/api/wind-data') {
+        const response = await handleWindDataRequest(request, env);
+        // Add CORS headers to the response
+        Object.entries(corsHeaders).forEach(([key, value]) => {
+          response.headers.set(key, value);
+        });
+        return response;
+      }
+
+      if (path.startsWith("/api/")) {
+        return Response.json({
+          name: "Port Olímpic Wind Data API",
+          endpoints: {
+            "/api/wind-data": "Get wind data with optional query params: ?days=7&limit=400&refresh=true"
+          }
+        }, { headers: corsHeaders });
+      }
+
+      return new Response('Not Found', { 
+        status: 404,
+        headers: corsHeaders
+      });
+
+    } catch (error) {
+      console.error('Worker error:', error);
+      return new Response(JSON.stringify({ error: 'Internal server error' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
   },
-} satisfies ExportedHandler<Env>;
+};
+
+async function handleCron(env: Env): Promise<void> {
+  try {
+    // Fetch latest wind data
+    const windData = await fetchLatestWindData();
+    
+    if (windData) {
+      const notificationService = new NotificationService(env);
+      await notificationService.checkAndSendNotifications(windData);
+    }
+  } catch (error) {
+    console.error('Cron job error:', error);
+  }
+}
+
+async function fetchLatestWindData(): Promise<any> {
+  try {
+    // Replace with your actual wind data API
+    const response = await fetch('YOUR_WIND_DATA_API_ENDPOINT');
+    const data = await response.json();
+    
+    // Transform to expected format
+    return {
+      wind_speed_knots: data.wind_speed,
+      max_wind_knots: data.gust_speed,
+      datetime: data.timestamp || new Date().toISOString(),
+      location: 'default'
+    };
+  } catch (error) {
+    console.error('Failed to fetch wind data:', error);
+    return null;
+  }
+}
