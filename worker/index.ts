@@ -304,14 +304,23 @@ async function storeWeatherCloudReading(env: Env, point: WindDataPoint): Promise
     const existing = await env.WIND_DATA.get(kvKey);
     let readings: WindDataPoint[] = existing ? JSON.parse(existing) : [];
 
-    // Don't store duplicates (same epoch)
     const pointTime = new Date(point.datetime).getTime();
-    if (readings.some(r => new Date(r.datetime).getTime() === pointTime)) {
-      return;
-    }
 
-    readings.push(point);
-    readings.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
+    // Station updates ~every 60s. If we already have a reading with the
+    // same epoch, average the values to smooth out noise.
+    const existingIdx = readings.findIndex(r => new Date(r.datetime).getTime() === pointTime);
+    if (existingIdx !== -1) {
+      const prev = readings[existingIdx];
+      readings[existingIdx] = {
+        datetime: prev.datetime,
+        wind_speed_knots: (prev.wind_speed_knots + point.wind_speed_knots) / 2,
+        max_wind_knots: Math.max(prev.max_wind_knots, point.max_wind_knots),
+        wind_direction: point.wind_direction, // use latest direction
+      };
+    } else {
+      readings.push(point);
+      readings.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
+    }
 
     // Keep readings for 30 days
     await env.WIND_DATA.put(kvKey, JSON.stringify(readings), {
@@ -349,7 +358,7 @@ async function getCachedDayData(env: Env, dateKey: string): Promise<{ data: Wind
 async function cacheDayData(env: Env, dateKey: string, data: WindDataPoint[], source: DataSource): Promise<void> {
   try {
     const cacheData = { data, timestamp: Date.now(), dateKey, source };
-    const ttl = isToday(new Date(dateKey)) ? 10 * 60 : 7 * 24 * 60 * 60;
+    const ttl = isToday(new Date(dateKey)) ? 60 : 7 * 24 * 60 * 60;
     await env.WIND_DATA.put(`day_${dateKey}`, JSON.stringify(cacheData), {
       expirationTtl: ttl
     });
@@ -454,7 +463,7 @@ async function getCurrentDayData(
       if (cacheInfo) {
         const parsed = JSON.parse(cacheInfo);
         const cacheAge = Date.now() - parsed.timestamp;
-        if (cacheAge < 10 * 60 * 1000) {
+        if (cacheAge < 60 * 1000) {
           return { data: cached.data, cached: true, source: cached.source };
         }
       }
