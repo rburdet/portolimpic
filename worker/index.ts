@@ -120,11 +120,49 @@ async function fetchControlmeteoData(startDate: Date, endDate: Date, limit: numb
 // ─── WeatherCloud ─────────────────────────────────────────────────
 
 const WEATHERCLOUD_DEVICE_CODE = '9415750150';
+const WC_PAGE_URL = `https://app.weathercloud.net/p${WEATHERCLOUD_DEVICE_CODE}`;
 
-async function fetchWeatherCloudCsrfToken(): Promise<{ csrfToken: string; cookies: string }> {
-  const response = await fetch(`https://app.weathercloud.net/p${WEATHERCLOUD_DEVICE_CODE}`, {
+// TTL jitter: adds 0–maxJitter seconds to a base TTL to spread out refetches
+function jitteredTtl(baseSecs: number, maxJitterSecs: number): number {
+  return baseSecs + Math.floor(Math.random() * maxJitterSecs);
+}
+
+// Full browser-like headers for all WeatherCloud requests
+const WC_BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/javascript, */*; q=0.01',
+  'Accept-Language': 'en-US,en;q=0.9,es;q=0.8,ca;q=0.7',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Sec-Ch-Ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"macOS"',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-origin',
+};
+
+// ── CSRF token, cached in KV to avoid hitting the page on every request ──
+
+const CSRF_CACHE_KEY = 'wc_csrf_session';
+
+async function getWeatherCloudSession(env: Env): Promise<{ csrfToken: string; cookies: string }> {
+  // Check KV cache first
+  try {
+    const cached = await env.WIND_DATA.get(CSRF_CACHE_KEY);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch {}
+
+  // Fetch fresh token from the page
+  const response = await fetch(WC_PAGE_URL, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      ...WC_BROWSER_HEADERS,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
     },
   });
 
@@ -138,17 +176,42 @@ async function fetchWeatherCloudCsrfToken(): Promise<{ csrfToken: string; cookie
     throw new Error('Could not extract CSRF token from WeatherCloud page');
   }
 
-  // Extract Set-Cookie headers for session
   const cookies = response.headers.get('set-cookie') || '';
+  const session = { csrfToken: csrfMatch[1], cookies };
 
-  return { csrfToken: csrfMatch[1], cookies };
+  // Cache for 25–35 min (jittered)
+  await env.WIND_DATA.put(CSRF_CACHE_KEY, JSON.stringify(session), {
+    expirationTtl: jitteredTtl(25 * 60, 10 * 60),
+  });
+
+  return session;
+}
+
+// ── Fetch lock: coalesce concurrent requests ──
+// Only one worker invocation fetches from WeatherCloud at a time.
+// Others see the lock and serve whatever is in cache (even if slightly stale).
+
+const FETCH_LOCK_KEY = 'wc_fetch_lock';
+const FETCH_LOCK_TTL = 30; // seconds — auto-expires if worker crashes
+
+async function acquireFetchLock(env: Env): Promise<boolean> {
+  const existing = await env.WIND_DATA.get(FETCH_LOCK_KEY);
+  if (existing) return false; // another worker is fetching
+  await env.WIND_DATA.put(FETCH_LOCK_KEY, Date.now().toString(), {
+    expirationTtl: FETCH_LOCK_TTL,
+  });
+  return true;
+}
+
+async function releaseFetchLock(env: Env): Promise<void> {
+  try { await env.WIND_DATA.delete(FETCH_LOCK_KEY); } catch {}
 }
 
 interface WeatherCloudCurrentValues {
   epoch: number;
-  wspd: number;      // current wind speed km/h
-  wspdavg: number;   // average wind speed km/h
-  wspdhi: number;    // max wind gust km/h
+  wspd: number;      // current wind speed m/s
+  wspdavg: number;   // average wind speed m/s
+  wspdhi: number;    // max wind gust m/s
   wdir: number;      // current wind direction degrees
   wdiravg: number;   // average wind direction degrees
   temp: number;
@@ -163,9 +226,9 @@ async function fetchWeatherCloudCurrentValues(csrfToken: string, cookies: string
 
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      ...WC_BROWSER_HEADERS,
       'X-Requested-With': 'XMLHttpRequest',
-      'Referer': `https://app.weathercloud.net/p${WEATHERCLOUD_DEVICE_CODE}`,
+      'Referer': WC_PAGE_URL,
       'Cookie': cookies,
     },
   });
@@ -194,30 +257,45 @@ interface WeatherCloudEvolutionResponse {
   };
 }
 
-async function fetchWeatherCloudEvolution(
-  csrfToken: string,
-  cookies: string,
-  period: string = '10min'
-): Promise<WeatherCloudEvolutionResponse> {
+// ── Evolution data, cached separately with longer TTL (hourly data barely changes) ──
+
+const EVOLUTION_CACHE_KEY = 'wc_evolution';
+
+async function getWeatherCloudEvolution(env: Env, csrfToken: string, cookies: string): Promise<WeatherCloudEvolutionResponse> {
+  // Check cache — evolution data only needs refreshing every ~15min
+  try {
+    const cached = await env.WIND_DATA.get(EVOLUTION_CACHE_KEY);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch {}
+
   const encodedToken = encodeURIComponent(csrfToken);
 
   const response = await fetch('https://app.weathercloud.net/pro/evolution', {
     method: 'POST',
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      ...WC_BROWSER_HEADERS,
       'X-Requested-With': 'XMLHttpRequest',
-      'Referer': `https://app.weathercloud.net/p${WEATHERCLOUD_DEVICE_CODE}`,
+      'Referer': WC_PAGE_URL,
       'Content-Type': 'application/x-www-form-urlencoded',
       'Cookie': cookies,
     },
-    body: `code=${WEATHERCLOUD_DEVICE_CODE}&variable=wind&period=${period}&WEATHERCLOUD_CSRF_TOKEN=${encodedToken}`,
+    body: `code=${WEATHERCLOUD_DEVICE_CODE}&variable=wind&period=10min&WEATHERCLOUD_CSRF_TOKEN=${encodedToken}`,
   });
 
   if (!response.ok) {
     throw new Error(`WeatherCloud evolution fetch failed: ${response.status}`);
   }
 
-  return response.json() as Promise<WeatherCloudEvolutionResponse>;
+  const data = await response.json() as WeatherCloudEvolutionResponse;
+
+  // Cache for 12–18 min (jittered)
+  await env.WIND_DATA.put(EVOLUTION_CACHE_KEY, JSON.stringify(data), {
+    expirationTtl: jitteredTtl(12 * 60, 6 * 60),
+  });
+
+  return data;
 }
 
 /**
@@ -358,7 +436,8 @@ async function getCachedDayData(env: Env, dateKey: string): Promise<{ data: Wind
 async function cacheDayData(env: Env, dateKey: string, data: WindDataPoint[], source: DataSource): Promise<void> {
   try {
     const cacheData = { data, timestamp: Date.now(), dateKey, source };
-    const ttl = isToday(new Date(dateKey)) ? 60 : 7 * 24 * 60 * 60;
+    // Current day: 60–90s jittered. Historical: 7 days + up to 1h jitter.
+    const ttl = isToday(new Date(dateKey)) ? jitteredTtl(60, 30) : jitteredTtl(7 * 24 * 60 * 60, 3600);
     await env.WIND_DATA.put(`day_${dateKey}`, JSON.stringify(cacheData), {
       expirationTtl: ttl
     });
@@ -391,20 +470,27 @@ async function fetchDayData(
 
   // 2) Fallback to WeatherCloud
   try {
-    // First check if we have stored granular readings for this day
     const dateKey = getDateKey(barcelonaDate);
     const storedReadings = await getStoredWeatherCloudReadings(env, dateKey);
 
-    // Get session + CSRF token
-    const { csrfToken, cookies } = await fetchWeatherCloudCsrfToken();
+    // Coalesce: only one worker fetches at a time; others serve stored data
+    const gotLock = await acquireFetchLock(env);
+    if (!gotLock && storedReadings.length > 0) {
+      console.log('WeatherCloud fetch lock held by another worker, serving stored readings');
+      return { data: storedReadings, source: 'weathercloud' };
+    }
+
+    try {
+    // Get cached or fresh session
+    const { csrfToken, cookies } = await getWeatherCloudSession(env);
 
     // Fetch current value and store it
     const currentValues = await fetchWeatherCloudCurrentValues(csrfToken, cookies);
     const currentPoint = weatherCloudCurrentToDataPoint(currentValues);
     await storeWeatherCloudReading(env, currentPoint);
 
-    // Fetch evolution data for historical hourly aggregates
-    const evolution = await fetchWeatherCloudEvolution(csrfToken, cookies, '10min');
+    // Fetch evolution data (cached separately, ~15min TTL)
+    const evolution = await getWeatherCloudEvolution(env, csrfToken, cookies);
     const evolutionData = parseWeatherCloudEvolution(evolution);
 
     // Store each evolution data point too
@@ -441,9 +527,15 @@ async function fetchDayData(
       .sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
 
     return { data: dayData, source: 'weathercloud' };
+    } finally {
+      if (gotLock) await releaseFetchLock(env);
+    }
   } catch (error) {
     console.error('WeatherCloud fetch also failed:', error);
-    return { data: [], source: 'weathercloud' };
+    // If we have stored readings, return those even on error
+    const dateKey = getDateKey(barcelonaDate);
+    const fallbackReadings = await getStoredWeatherCloudReadings(env, dateKey);
+    return { data: fallbackReadings, source: 'weathercloud' };
   }
 }
 
@@ -463,7 +555,7 @@ async function getCurrentDayData(
       if (cacheInfo) {
         const parsed = JSON.parse(cacheInfo);
         const cacheAge = Date.now() - parsed.timestamp;
-        if (cacheAge < 60 * 1000) {
+        if (cacheAge < 60_000) { // 1 min — matches station update cadence
           return { data: cached.data, cached: true, source: cached.source };
         }
       }
@@ -592,7 +684,7 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
 async function handleCron(env: Env): Promise<void> {
   try {
     // Fetch latest wind data from WeatherCloud (since controlmeteo is offline)
-    const { csrfToken, cookies } = await fetchWeatherCloudCsrfToken();
+    const { csrfToken, cookies } = await getWeatherCloudSession(env);
     const currentValues = await fetchWeatherCloudCurrentValues(csrfToken, cookies);
     const dataPoint = weatherCloudCurrentToDataPoint(currentValues);
 
