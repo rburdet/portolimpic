@@ -12,8 +12,8 @@ function App() {
   const [windData, setWindData] = useState<WindDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedRange, setSelectedRange] = useState('7d');
-  const [currentHours, setCurrentHours] = useState(168); // 7 days
+  const [selectedRange, setSelectedRange] = useState('8h');
+  const [currentHours, setCurrentHours] = useState(8);
   const [customRange, setCustomRange] = useState<{ start: Date; end: Date } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -213,12 +213,23 @@ function App() {
             <Card>
               <CardContent className="p-3 sm:p-4">
                 <div className="text-xs sm:text-sm text-gray-600 space-y-1">
-                  <div>Data source: controlmeteo.com</div>
+                  <div>
+                    Data source: {windData.source === 'weathercloud' ? (
+                      <span className="font-medium text-purple-600">WeatherCloud (Port Olímpic)</span>
+                    ) : (
+                      <span className="font-medium text-blue-600">controlmeteo.com</span>
+                    )}
+                  </div>
                   <div>Station: Port Olímpic, Barcelona</div>
                   <div>
                     Last updated: {new Date(windData.timestamp).toLocaleString()}
                     {windData.cached && ' (from cache)'}
                   </div>
+                  {windData.source === 'weathercloud' && (
+                    <div className="text-xs text-purple-500 mt-1">
+                      Primary station offline since Dec 2024. Using WeatherCloud fallback data.
+                    </div>
+                  )}
                   <div className="text-xs text-gray-500 mt-2">
                     Wind speeds in knots. Use the zoom brush below the chart to focus on specific time periods.
                     Blue line = wind speed, red dashed line = gusts. Arrows show wind direction.

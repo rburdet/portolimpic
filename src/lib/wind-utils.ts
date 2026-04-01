@@ -40,4 +40,5 @@ export interface WindDataResponse {
   data: WindDataPoint[];
   cached: boolean;
   timestamp: number;
+  source?: 'controlmeteo' | 'weathercloud';
 } 

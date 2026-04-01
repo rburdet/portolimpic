@@ -289,21 +289,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
   };
 
   // Add wheel and touch event listeners
-  useEffect(() => {
-    const chartElement = chartRef.current;
-    if (!chartElement) return;
-
-    const handleWheel = (e: WheelEvent) => handleZoom(e as any);
-    const handleTouch = (e: TouchEvent) => handleZoom(e as any);
-
-    chartElement.addEventListener('wheel', handleWheel, { passive: false });
-    chartElement.addEventListener('touchmove', handleTouch, { passive: false });
-
-    return () => {
-      chartElement.removeEventListener('wheel', handleWheel);
-      chartElement.removeEventListener('touchmove', handleTouch);
-    };
-  }, [originalData, startTime, endTime]);
+  // Zoom via scroll/pinch disabled — it hijacks normal page scrolling
 
   const handleReset = () => {
     if (originalData.length > 0) {
@@ -471,12 +457,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
           
           {/* Instructions */}
           <div className="text-xs text-gray-500 text-center mt-2">
-            <div className="space-y-1">
-              <div>🖱️ <strong>Click & Drag:</strong> Pan through timeline</div>
-              <div>⇧ <strong>Shift + Click & Drag:</strong> Select time range to zoom</div>
-              <div>🖱️ <strong>Scroll Wheel:</strong> Zoom in/out</div>
-              <div>📱 <strong>Touch:</strong> Pinch to zoom, gestures supported</div>
-            </div>
+            Blue line = wind speed, red dashed = gusts. Arrows show wind direction.
           </div>
         </CardContent>
       </Card>
