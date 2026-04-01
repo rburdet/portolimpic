@@ -24,6 +24,10 @@ function kmhToKnots(kmh: number): number {
   return kmh * 0.539957;
 }
 
+function msToKnots(ms: number): number {
+  return ms * 1.94384;
+}
+
 function formatDateForUrl(date: Date): string {
   const barcelonaDate = new Date(date.toLocaleString("en-US", {timeZone: "Europe/Madrid"}));
   const day = barcelonaDate.getDate().toString().padStart(2, '0');
@@ -219,8 +223,8 @@ async function fetchWeatherCloudEvolution(
 /**
  * Convert WeatherCloud evolution response to WindDataPoint[].
  * Variable codes in the response:
- *   521 = max wind gust (wspdhi) in km/h
- *   541 = average wind speed (wspdavg) in km/h
+ *   521 = max wind gust (wspdhi) in m/s
+ *   541 = average wind speed (wspdavg) in m/s
  *   641 = wind direction (sectors + vector sum)
  */
 function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): WindDataPoint[] {
@@ -234,9 +238,9 @@ function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): W
 
     if (!windData?.stats || !gustData?.stats) continue;
 
-    // Use the average from the samples: sum / samples
-    const windSpeedKmh = windData.stats.sum! / windData.samples;
-    const gustSpeedKmh = gustData.stats.max!;
+    // Use the average from the samples: sum / samples (values in m/s)
+    const windSpeedMs = windData.stats.sum! / windData.samples;
+    const gustSpeedMs = gustData.stats.max!;
 
     // Calculate wind direction from the vector sum if available
     let windDirection = 0;
@@ -268,8 +272,8 @@ function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): W
 
     data.push({
       datetime: new Date(epoch * 1000).toISOString(),
-      wind_speed_knots: kmhToKnots(windSpeedKmh),
-      max_wind_knots: kmhToKnots(gustSpeedKmh),
+      wind_speed_knots: msToKnots(windSpeedMs),
+      max_wind_knots: msToKnots(gustSpeedMs),
       wind_direction: windDirection,
     });
   }
@@ -280,10 +284,11 @@ function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): W
 }
 
 function weatherCloudCurrentToDataPoint(values: WeatherCloudCurrentValues): WindDataPoint {
+  // WeatherCloud API returns wind values in m/s
   return {
     datetime: new Date(values.epoch * 1000).toISOString(),
-    wind_speed_knots: kmhToKnots(values.wspdavg),
-    max_wind_knots: kmhToKnots(values.wspdhi),
+    wind_speed_knots: msToKnots(values.wspdavg),
+    max_wind_knots: msToKnots(values.wspdhi),
     wind_direction: values.wdiravg,
   };
 }
