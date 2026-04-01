@@ -16,13 +16,9 @@ interface TimeRangeSelectorProps {
 }
 
 const TIME_RANGES: TimeRange[] = [
-  { label: '6h', hours: 6, value: '6h' },
-  { label: '12h', hours: 12, value: '12h' },
-  { label: '1d', hours: 24, value: '1d' },
-  { label: '3d', hours: 72, value: '3d' },
-  { label: '7d', hours: 168, value: '7d' },
-  { label: '14d', hours: 336, value: '14d' },
-  { label: '30d', hours: 720, value: '30d' },
+  { label: '8h', hours: 8, value: '8h' },
+  { label: '24h', hours: 24, value: '24h' },
+  { label: '5d', hours: 120, value: '5d' },
 ];
 
 export function TimeRangeSelector({ selectedRange, onRangeChange, onCustomRange }: TimeRangeSelectorProps) {
