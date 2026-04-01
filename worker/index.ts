@@ -555,6 +555,7 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
     while (currentDate <= endDate) {
       const dateKey = getDateKey(currentDate);
       try { await env.WIND_DATA.delete(`day_${dateKey}`); } catch {}
+      try { await env.WIND_DATA.delete(`wc_readings_${dateKey}`); } catch {}
       currentDate.setDate(currentDate.getDate() + 1);
     }
   }
