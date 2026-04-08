@@ -2,10 +2,8 @@ import { useState, useEffect } from 'react';
 import { WindChart } from '@/components/WindChart';
 import { WindSummary } from '@/components/WindSummary';
 import { TimeRangeSelector } from '@/components/TimeRangeSelector';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { WindDataResponse } from '@/lib/wind-utils';
-import { RefreshCw, AlertCircle, TrendingUp } from 'lucide-react';
 import { NotificationSettings } from '@/components/NotificationSettings';
 
 function App() {

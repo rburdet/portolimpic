@@ -25,7 +25,8 @@ interface WindData {
 }
 
 export class NotificationService {
-  constructor(private env: Env) {}
+  private env: Env;
+  constructor(env: Env) { this.env = env; }
 
   // Main cron function - call this every 5 minutes
   async checkAndSendNotifications(windData: WindData): Promise<void> {
@@ -48,7 +49,7 @@ export class NotificationService {
       WHERE active = true
     `).all();
 
-    return result.results as UserSubscription[];
+    return result.results as unknown as UserSubscription[];
   }
 
   private async checkThresholdsAndNotify(
@@ -274,7 +275,7 @@ export class NotificationService {
     return `${encodedHeader}.${encodedPayload}.signature`;
   }
 
-  private async encryptPayload(payload: string, keys: any): Promise<ArrayBuffer> {
+  private async encryptPayload(payload: string, _keys: any): Promise<ArrayBuffer> {
     // Simplified encryption - in production, implement proper Web Push encryption
     // This is a placeholder that returns the payload as ArrayBuffer
     return new TextEncoder().encode(payload);
@@ -283,11 +284,11 @@ export class NotificationService {
   // API endpoints
   async handleSubscriptionSave(request: Request): Promise<Response> {
     try {
-      const data = await request.json();
+      const data = await request.json() as any;
       const userId = this.getUserId(request); // Implement your auth logic
 
       await this.env.DB.prepare(`
-        INSERT OR REPLACE INTO user_subscriptions 
+        INSERT OR REPLACE INTO user_subscriptions
         (user_id, email, push_endpoint, push_keys, wind_speed_threshold, gust_threshold, active, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
       `).bind(
@@ -357,7 +358,7 @@ export class NotificationService {
     }
   }
 
-  private getUserId(request: Request): string {
+  private getUserId(_request: Request): string {
     // Implement your authentication logic here
     // This could be from JWT token, session, etc.
     return 'user-123'; // Placeholder
