@@ -124,7 +124,8 @@ const WC_PAGE_URL = `https://app.weathercloud.net/p${WEATHERCLOUD_DEVICE_CODE}`;
 
 // TTL jitter: adds 0–maxJitter seconds to a base TTL to spread out refetches
 function jitteredTtl(baseSecs: number, maxJitterSecs: number): number {
-  return baseSecs + Math.floor(Math.random() * maxJitterSecs);
+  // Cloudflare KV minimum expirationTtl is 60 seconds
+  return Math.max(60, baseSecs + Math.floor(Math.random() * maxJitterSecs));
 }
 
 // Full browser-like headers for all WeatherCloud requests
@@ -192,7 +193,7 @@ async function getWeatherCloudSession(env: Env): Promise<{ csrfToken: string; co
 // Others see the lock and serve whatever is in cache (even if slightly stale).
 
 const FETCH_LOCK_KEY = 'wc_fetch_lock';
-const FETCH_LOCK_TTL = 30; // seconds — auto-expires if worker crashes
+const FETCH_LOCK_TTL = 60; // seconds — auto-expires if worker crashes (KV minimum is 60)
 
 async function acquireFetchLock(env: Env): Promise<boolean> {
   const existing = await env.WIND_DATA.get(FETCH_LOCK_KEY);
