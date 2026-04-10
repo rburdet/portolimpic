@@ -12,25 +12,31 @@ interface WindChartProps {
   height?: number;
 }
 
-interface ChartDataPoint extends WindDataPoint {
+interface ChartDataPoint {
+  datetime: string;
+  wind_speed_knots: number | null;
+  max_wind_knots: number | null;
+  wind_direction: number;
   formattedTime: string;
   formattedDate: string;
   windDirection16: string;
   index: number;
+  isGap?: boolean;
 }
 
 const CustomTooltip = ({ active, payload }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload as ChartDataPoint;
+    if (data.isGap) return null;
     return (
       <div className="bg-white p-3 border border-gray-300 rounded-lg shadow-lg max-w-xs">
         <p className="font-semibold text-sm mb-2">{formatDate(data.datetime)}</p>
         <div className="space-y-1">
           <p className="text-blue-600 text-sm">
-            Wind: <span className="font-semibold">{data.wind_speed_knots.toFixed(1)} kn</span>
+            Wind: <span className="font-semibold">{(data.wind_speed_knots ?? 0).toFixed(1)} kn</span>
           </p>
           <p className="text-red-600 text-sm">
-            Gust: <span className="font-semibold">{data.max_wind_knots.toFixed(1)} kn</span>
+            Gust: <span className="font-semibold">{(data.max_wind_knots ?? 0).toFixed(1)} kn</span>
           </p>
           <div className="flex items-center gap-2 text-gray-600 text-sm">
             <span>Direction:</span>
@@ -47,15 +53,40 @@ const CustomTooltip = ({ active, payload }: any) => {
 export function WindChart({ data, title = "Wind Speed and Direction", height = 400 }: WindChartProps) {
   // Sort data from oldest to newest for proper X-axis display
   const sortedData = [...data].sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
-  
-  // Transform data for the chart
-  const chartData: ChartDataPoint[] = sortedData.map((point, index) => ({
-    ...point,
-    formattedTime: formatTime(point.datetime),
-    formattedDate: formatDate(point.datetime),
-    windDirection16: degToCompass16(point.wind_direction),
-    index,
-  }));
+
+  // Transform data and insert gap markers where readings are >45min apart
+  // (evolution data produces ~3 points/hour, so gaps >45min indicate missing data)
+  const GAP_THRESHOLD_MS = 45 * 60 * 1000;
+  const chartData: ChartDataPoint[] = [];
+  let idx = 0;
+  for (let i = 0; i < sortedData.length; i++) {
+    const point = sortedData[i]!;
+    // Insert a null-value gap marker if there's a large time gap
+    if (i > 0) {
+      const prevTime = new Date(sortedData[i - 1]!.datetime).getTime();
+      const currTime = new Date(point.datetime).getTime();
+      if (currTime - prevTime > GAP_THRESHOLD_MS) {
+        chartData.push({
+          datetime: new Date(prevTime + 1).toISOString(),
+          wind_speed_knots: null,
+          max_wind_knots: null,
+          wind_direction: 0,
+          formattedTime: '',
+          formattedDate: '',
+          windDirection16: '',
+          index: idx++,
+          isGap: true,
+        });
+      }
+    }
+    chartData.push({
+      ...point,
+      formattedTime: formatTime(point.datetime),
+      formattedDate: formatDate(point.datetime),
+      windDirection16: degToCompass16(point.wind_direction),
+      index: idx++,
+    });
+  }
 
   // State management similar to the demo
   const [refAreaLeft, setRefAreaLeft] = useState<string | null>(null);
@@ -105,11 +136,12 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
     return Math.floor(dataLength / 6);
   };
 
-  // Sample data points for wind direction display
+  // Sample real (non-gap) data points for wind direction display
   const getDirectionData = () => {
+    const realPoints = zoomedData.filter(p => !p.isGap);
     const maxDirectionLabels = window.innerWidth < 640 ? 6 : 12;
-    const step = Math.max(1, Math.floor(zoomedData.length / maxDirectionLabels));
-    return zoomedData.filter((_, index) => index % step === 0);
+    const step = Math.max(1, Math.floor(realPoints.length / maxDirectionLabels));
+    return realPoints.filter((_, index) => index % step === 0);
   };
 
   const handleMouseDown = (e: any) => {
@@ -217,9 +249,10 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
     setRefAreaRight(null);
   };
 
-  // Calculate average wind speed for reference line
-  const avgWindSpeed = zoomedData.length > 0 
-    ? zoomedData.reduce((sum, point) => sum + point.wind_speed_knots, 0) / zoomedData.length
+  // Calculate average wind speed for reference line (exclude gap markers)
+  const realZoomedData = zoomedData.filter(p => !p.isGap);
+  const avgWindSpeed = realZoomedData.length > 0
+    ? realZoomedData.reduce((sum, point) => sum + (point.wind_speed_knots ?? 0), 0) / realZoomedData.length
     : 0;
 
   const firstData = originalData[0];
@@ -397,7 +430,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
                   {point.formattedTime}
                 </span>
                 <span className="text-xs text-blue-600 font-medium">
-                  {point.wind_speed_knots.toFixed(1)} kn
+                  {(point.wind_speed_knots ?? 0).toFixed(1)} kn
                 </span>
               </div>
             ))}
@@ -410,7 +443,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
         <Card>
           <CardContent className="p-3 text-center">
             <div className="text-lg font-bold text-blue-600">
-              {Math.max(...zoomedData.map(d => d.wind_speed_knots)).toFixed(1)}
+              {realZoomedData.length > 0 ? Math.max(...realZoomedData.map(d => d.wind_speed_knots ?? 0)).toFixed(1) : '-'}
             </div>
             <div className="text-xs text-blue-600">Max Wind (kn)</div>
           </CardContent>
@@ -418,7 +451,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
         <Card>
           <CardContent className="p-3 text-center">
             <div className="text-lg font-bold text-red-600">
-              {Math.max(...zoomedData.map(d => d.max_wind_knots)).toFixed(1)}
+              {realZoomedData.length > 0 ? Math.max(...realZoomedData.map(d => d.max_wind_knots ?? 0)).toFixed(1) : '-'}
             </div>
             <div className="text-xs text-red-600">Max Gust (kn)</div>
           </CardContent>
@@ -434,7 +467,7 @@ export function WindChart({ data, title = "Wind Speed and Direction", height = 4
         <Card>
           <CardContent className="p-3 text-center">
             <div className="text-lg font-bold text-gray-600">
-              {zoomedData.length}
+              {realZoomedData.length}
             </div>
             <div className="text-xs text-gray-600">Data Points</div>
           </CardContent>
