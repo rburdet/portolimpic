@@ -305,36 +305,50 @@ async function getWeatherCloudEvolution(env: Env, csrfToken: string, cookies: st
  *   521 = max wind gust (wspdhi) in m/s
  *   541 = average wind speed (wspdavg) in m/s
  *   641 = wind direction (sectors + vector sum)
+ *
+ * Each hourly bucket contains min/min_time, max/max_time, sum, and samples.
+ * We extract up to 3 points per bucket (at min_time, max_time, and bucket
+ * midpoint) so the chart looks continuous instead of showing 1 dot per hour.
  */
 function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): WindDataPoint[] {
-  const data: WindDataPoint[] = [];
+  const pointMap = new Map<number, WindDataPoint>(); // dedup by epoch
+
+  function addPoint(epoch: number, windKn: number, gustKn: number, dir: number) {
+    const existing = pointMap.get(epoch);
+    if (existing) {
+      // Average wind, keep higher gust
+      existing.wind_speed_knots = (existing.wind_speed_knots + windKn) / 2;
+      existing.max_wind_knots = Math.max(existing.max_wind_knots, gustKn);
+    } else {
+      pointMap.set(epoch, {
+        datetime: new Date(epoch * 1000).toISOString(),
+        wind_speed_knots: windKn,
+        max_wind_knots: gustKn,
+        wind_direction: dir,
+      });
+    }
+  }
 
   for (const [epochStr, variables] of Object.entries(evolution.data.values)) {
-    const epoch = parseInt(epochStr);
+    const bucketEpoch = parseInt(epochStr);
     const gustData = variables['521'];
     const windData = variables['541'];
     const dirData = variables['641'];
 
     if (!windData?.stats || !gustData?.stats) continue;
 
-    // Use the average from the samples: sum / samples (values in m/s)
-    const windSpeedMs = windData.stats.sum! / windData.samples;
-    const gustSpeedMs = gustData.stats.max!;
+    const avgWindMs = windData.stats.sum! / windData.samples;
+    const avgGustMs = gustData.stats.sum! / gustData.samples;
 
-    // Calculate wind direction from the vector sum if available
+    // Calculate wind direction from the vector sum
     let windDirection = 0;
     if (dirData?.stats) {
       const dirStats = dirData.stats as any;
       if (dirStats.sum?.x !== undefined && dirStats.sum?.y !== undefined) {
-        // atan2 gives radians, convert to degrees
         let degrees = Math.atan2(dirStats.sum.x, dirStats.sum.y) * (180 / Math.PI);
-        // atan2 with (x, y) gives angle from N: this matches weathercloud convention
-        // where x = sin component (E/W) and y = cos component (N/S)
-        // Negate because weathercloud uses "from" direction convention
         degrees = (degrees + 360) % 360;
         windDirection = Math.round(degrees);
       } else if (dirStats.sectors) {
-        // Fallback: use the most common sector
         const sectors = dirStats.sectors as Record<string, number>;
         let maxCount = 0;
         let dominantSector = 0;
@@ -344,20 +358,36 @@ function parseWeatherCloudEvolution(evolution: WeatherCloudEvolutionResponse): W
             dominantSector = parseInt(sector);
           }
         }
-        // Each sector = 22.5 degrees, sector 0 = N
         windDirection = dominantSector * 22.5;
       }
     }
 
-    data.push({
-      datetime: new Date(epoch * 1000).toISOString(),
-      wind_speed_knots: msToKnots(windSpeedMs),
-      max_wind_knots: msToKnots(gustSpeedMs),
-      wind_direction: windDirection,
-    });
+    // Point 1: at min_time with min wind speed
+    if (windData.stats.min_time && windData.stats.min != null) {
+      addPoint(
+        windData.stats.min_time,
+        msToKnots(windData.stats.min),
+        msToKnots(gustData.stats.min ?? avgGustMs),
+        windDirection,
+      );
+    }
+
+    // Point 2: at max_time with max wind speed
+    if (windData.stats.max_time && windData.stats.max != null) {
+      addPoint(
+        windData.stats.max_time,
+        msToKnots(windData.stats.max),
+        msToKnots(gustData.stats.max ?? avgGustMs),
+        windDirection,
+      );
+    }
+
+    // Point 3: at bucket midpoint with average values
+    const midEpoch = bucketEpoch + 1800; // +30min = middle of the hour
+    addPoint(midEpoch, msToKnots(avgWindMs), msToKnots(avgGustMs), windDirection);
   }
 
-  // Sort oldest to newest
+  const data = Array.from(pointMap.values());
   data.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
   return data;
 }
@@ -635,11 +665,13 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
   const searchParams = url.searchParams;
 
   const daysParam = searchParams.get('days') || '7';
+  const hoursParam = searchParams.get('hours');
   const limitParam = searchParams.get('limit') || '400';
   const forceRefreshParam = searchParams.get('refresh') === 'true';
 
   const days = parseInt(daysParam);
   const limit = parseInt(limitParam);
+  const hours = hoursParam ? parseInt(hoursParam) : null;
 
   if (isNaN(days) || days < 1 || days > 30) {
     return Response.json({ error: 'Days parameter must be between 1 and 30' }, { status: 400 });
@@ -650,7 +682,7 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
   const endDate = new Date(barcelonaNow.getFullYear(), barcelonaNow.getMonth(), barcelonaNow.getDate(), 23, 59, 59);
   const startDate = new Date(barcelonaNow.getFullYear(), barcelonaNow.getMonth(), barcelonaNow.getDate() - days + 1, 0, 0, 0);
 
-  console.log(`Request: days=${days}, limit=${limit}, refresh=${forceRefreshParam}`);
+  console.log(`Request: days=${days}, hours=${hours}, limit=${limit}, refresh=${forceRefreshParam}`);
 
   if (forceRefreshParam) {
     const currentDate = new Date(startDate);
@@ -665,8 +697,15 @@ async function handleWindDataRequest(request: Request, env: Env): Promise<Respon
   try {
     const result = await getHistoricalData(env, startDate, endDate, limit);
 
+    // If hours param is set, filter to only the requested time window
+    let filteredData = result.data;
+    if (hours && hours < days * 24) {
+      const cutoff = new Date(barcelonaNow.getTime() - hours * 60 * 60 * 1000);
+      filteredData = result.data.filter(p => new Date(p.datetime) >= cutoff);
+    }
+
     return Response.json({
-      data: result.data,
+      data: filteredData,
       cached: result.cached,
       timestamp: Date.now(),
       source: result.source,

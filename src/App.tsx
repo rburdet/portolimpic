@@ -23,27 +23,22 @@ function App() {
       let params: URLSearchParams;
       
       if (customRange) {
-        // For custom ranges, calculate days and use appropriate limit
         const diffTime = customRange.end.getTime() - customRange.start.getTime();
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        const limit = Math.min(4000, Math.max(100, diffDays * 100)); // Adaptive limit
-        
-        console.log(`Custom range: ${diffDays} days, limit: ${limit}`);
-        
+        const limit = Math.min(4000, Math.max(100, diffDays * 100));
+
         params = new URLSearchParams({
           days: diffDays.toString(),
           limit: limit.toString(),
           ...(forceRefresh && { refresh: 'true' })
         });
       } else {
-        // For preset ranges, convert hours to days and set appropriate limit
         const days = Math.max(1, Math.ceil(currentHours / 24));
         const limit = currentHours <= 24 ? '400' : currentHours <= 168 ? '1000' : '4000';
-        
-        console.log(`Preset range: ${currentHours} hours (${days} days), limit: ${limit}`);
-        
+
         params = new URLSearchParams({
           days: days.toString(),
+          hours: currentHours.toString(),
           limit,
           ...(forceRefresh && { refresh: 'true' })
         });
@@ -58,16 +53,6 @@ function App() {
       }
       
       const data: WindDataResponse = await response.json();
-      
-      console.log(`Received ${data.data.length} data points`);
-      
-      // Filter data for hour-based ranges if needed
-      if (!customRange && currentHours < 24 * 7) {
-        const cutoffTime = new Date(Date.now() - (currentHours * 60 * 60 * 1000));
-        const originalLength = data.data.length;
-        data.data = data.data.filter(point => new Date(point.datetime) >= cutoffTime);
-        console.log(`Filtered from ${originalLength} to ${data.data.length} points for ${currentHours}h range`);
-      }
       
       setWindData(data);
       setLastUpdated(new Date());
