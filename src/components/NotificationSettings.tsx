@@ -100,8 +100,7 @@ export function NotificationSettings() {
     try {
       const registration = await navigator.serviceWorker.ready;
       
-      // You'll need to replace this with your VAPID public key
-      const vapidPublicKey = 'YOUR_VAPID_PUBLIC_KEY';
+      const vapidPublicKey = 'BC_UmB_RatxI4MGXKw97vu4lORchUuYq8-hltnKe7H_LzqiG8jlm15_zqpkU5UGpcWAF1deGiI-lm3a8neyi6fo';
       
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
