@@ -54,9 +54,9 @@
 		"production": {
 			"vars": {
 				"ENVIRONMENT": "production",
-				"VAPID_PUBLIC_KEY": "your-vapid-public-key",
-				"VAPID_PRIVATE_KEY": "your-vapid-private-key",
-				"VAPID_EMAIL": "mailto:your-email@domain.com"
+				"VAPID_PUBLIC_KEY": "BC_UmB_RatxI4MGXKw97vu4lORchUuYq8-hltnKe7H_LzqiG8jlm15_zqpkU5UGpcWAF1deGiI-lm3a8neyi6fo",
+				"VAPID_PRIVATE_KEY": "lzGqAYqGuklVNgJYpPv-w3DB5eTD_vt2q3Lp0m9IxMY",
+				"VAPID_EMAIL": "mailto:rodrigoburdet@gmail.com"
 			},
 			"kv_namespaces": [
 				{
@@ -66,9 +66,9 @@
 			],
 			"d1_databases": [
 				{
-					"binding": "DB",
+					"binding": "portolimpic-prod",
 					"database_name": "portolimpic-prod",
-					"database_id": "your-prod-d1-id"
+					"database_id": "84601688-0013-45e5-8ae9-0a7b881e5353"
 				}
 			],
 			"triggers": {

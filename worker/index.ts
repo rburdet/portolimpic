@@ -405,38 +405,51 @@ function weatherCloudCurrentToDataPoint(values: WeatherCloudCurrentValues): Wind
 // ─── KV-based readings store ──────────────────────────────────────
 // Accumulates individual WeatherCloud readings so we build granular history
 
-async function storeWeatherCloudReading(env: Env, point: WindDataPoint): Promise<void> {
-  const dateKey = getDateKey(new Date(point.datetime));
-  const kvKey = `wc_readings_${dateKey}`;
+async function storeWeatherCloudReadings(env: Env, points: WindDataPoint[]): Promise<void> {
+  if (points.length === 0) return;
 
-  try {
-    const existing = await env.WIND_DATA.get(kvKey);
-    let readings: WindDataPoint[] = existing ? JSON.parse(existing) : [];
+  // Group points by date to minimize KV ops (one GET+PUT per date)
+  const byDate = new Map<string, WindDataPoint[]>();
+  for (const point of points) {
+    const dateKey = getDateKey(new Date(point.datetime));
+    const group = byDate.get(dateKey) ?? [];
+    group.push(point);
+    byDate.set(dateKey, group);
+  }
 
-    const pointTime = new Date(point.datetime).getTime();
+  for (const [dateKey, newPoints] of byDate) {
+    const kvKey = `wc_readings_${dateKey}`;
+    try {
+      const existing = await env.WIND_DATA.get(kvKey);
+      const readings: WindDataPoint[] = existing ? JSON.parse(existing) : [];
 
-    // Station updates ~every 60s. If we already have a reading with the
-    // same epoch, average the values to smooth out noise.
-    const existingIdx = readings.findIndex(r => new Date(r.datetime).getTime() === pointTime);
-    if (existingIdx !== -1) {
-      const prev = readings[existingIdx];
-      readings[existingIdx] = {
-        datetime: prev.datetime,
-        wind_speed_knots: (prev.wind_speed_knots + point.wind_speed_knots) / 2,
-        max_wind_knots: Math.max(prev.max_wind_knots, point.max_wind_knots),
-        wind_direction: point.wind_direction, // use latest direction
-      };
-    } else {
-      readings.push(point);
+      for (const point of newPoints) {
+        const pointTime = new Date(point.datetime).getTime();
+        // Station updates ~every 60s. If we already have a reading with the
+        // same epoch, average the values to smooth out noise.
+        const existingIdx = readings.findIndex(r => new Date(r.datetime).getTime() === pointTime);
+        if (existingIdx !== -1) {
+          const prev = readings[existingIdx];
+          readings[existingIdx] = {
+            datetime: prev.datetime,
+            wind_speed_knots: (prev.wind_speed_knots + point.wind_speed_knots) / 2,
+            max_wind_knots: Math.max(prev.max_wind_knots, point.max_wind_knots),
+            wind_direction: point.wind_direction,
+          };
+        } else {
+          readings.push(point);
+        }
+      }
+
       readings.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime());
-    }
 
-    // Keep readings for 30 days
-    await env.WIND_DATA.put(kvKey, JSON.stringify(readings), {
-      expirationTtl: 30 * 24 * 60 * 60,
-    });
-  } catch (error) {
-    console.error('Error storing WeatherCloud reading:', error);
+      // Keep readings for 30 days
+      await env.WIND_DATA.put(kvKey, JSON.stringify(readings), {
+        expirationTtl: 30 * 24 * 60 * 60,
+      });
+    } catch (error) {
+      console.error('Error storing WeatherCloud readings:', error);
+    }
   }
 }
 
@@ -451,12 +464,12 @@ async function getStoredWeatherCloudReadings(env: Env, dateKey: string): Promise
 
 // ─── Caching layer ────────────────────────────────────────────────
 
-async function getCachedDayData(env: Env, dateKey: string): Promise<{ data: WindDataPoint[], source: DataSource } | null> {
+async function getCachedDayData(env: Env, dateKey: string): Promise<{ data: WindDataPoint[], source: DataSource, timestamp: number } | null> {
   try {
     const cachedData = await env.WIND_DATA.get(`day_${dateKey}`);
     if (cachedData) {
       const parsed = JSON.parse(cachedData);
-      return { data: parsed.data, source: parsed.source || 'controlmeteo' };
+      return { data: parsed.data, source: parsed.source || 'controlmeteo', timestamp: parsed.timestamp ?? 0 };
     }
   } catch (error) {
     console.error('Error reading day cache:', error);
@@ -518,16 +531,13 @@ async function fetchDayData(
     // Fetch current value and store it
     const currentValues = await fetchWeatherCloudCurrentValues(csrfToken, cookies);
     const currentPoint = weatherCloudCurrentToDataPoint(currentValues);
-    await storeWeatherCloudReading(env, currentPoint);
 
     // Fetch evolution data (cached separately, ~15min TTL)
     const evolution = await getWeatherCloudEvolution(env, csrfToken, cookies);
     const evolutionData = parseWeatherCloudEvolution(evolution);
 
-    // Store each evolution data point too
-    for (const point of evolutionData) {
-      await storeWeatherCloudReading(env, point);
-    }
+    // Store current + all evolution points in one batch (one GET+PUT per date instead of N)
+    await storeWeatherCloudReadings(env, [currentPoint, ...evolutionData]);
 
     // Merge evolution data with stored readings (stored readings have more granularity over time)
     const allReadings = [...storedReadings];
@@ -581,17 +591,9 @@ async function getCurrentDayData(
   // Check cache
   const cached = await getCachedDayData(env, todayKey);
   if (cached) {
-    try {
-      const cacheInfo = await env.WIND_DATA.get(`day_${todayKey}`);
-      if (cacheInfo) {
-        const parsed = JSON.parse(cacheInfo);
-        const cacheAge = Date.now() - parsed.timestamp;
-        if (cacheAge < 60_000) { // 1 min — matches station update cadence
-          return { data: cached.data, cached: true, source: cached.source };
-        }
-      }
-    } catch (error) {
-      console.error('Error checking cache age:', error);
+    const cacheAge = Date.now() - cached.timestamp;
+    if (cacheAge < 60_000) { // 1 min — matches station update cadence
+      return { data: cached.data, cached: true, source: cached.source };
     }
   }
 
@@ -729,7 +731,7 @@ async function handleCron(env: Env): Promise<void> {
     const dataPoint = weatherCloudCurrentToDataPoint(currentValues);
 
     // Store the reading for history
-    await storeWeatherCloudReading(env, dataPoint);
+    await storeWeatherCloudReadings(env, [dataPoint]);
 
     // Send notifications if thresholds exceeded
     const notificationService = new NotificationService(env);
